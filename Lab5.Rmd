@@ -1,0 +1,236 @@
+---
+title: "Lab5"
+author: "Hanyu Song"
+date: "10/15/2019"
+output: pdf_document
+---
+
+Topics today: ROC/AUC and lack of fit test for negative binomial regression
+
+
+
+# ROC and AUC
+
+
+## Confusion matrix and misclassification rate
+A confusion matrix is a table that is often used to describe the performance of a classification model (or "classifier") on a set of data for which the true values are known. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(ISLR)
+require(ggplot2)
+require(ROCR)
+require(magrittr)
+library(knitr)
+```
+
+
+```{r Caravan}
+# Set up the data that we need #
+data(Smarket)
+# look up the information of Smartket: help(Smart)
+# Look at the summary of the data #
+summary(Smarket)
+```
+
+
+```{r}
+# Start by fitting the Model 
+smarket.fit <- glm(Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume,
+                      data = Smarket,
+                      family = "binomial"(link = "logit"))
+glm.probs <- predict(smarket.fit, type="response")
+```
+
+```{r}
+# set threshold/cut-off at 0.5 and create a confusion matrix
+# your misclassification rate depends on the cut-off
+cutoff = 0.5
+glm.pred <- rep("Down", nrow(Smarket))
+glm.pred[glm.probs > cutoff] <- "Up"
+glm.pred <- factor(glm.pred, levels = c('Down', 'Up'))
+# one way to create a confusion matrix
+confMat <- table(glm.pred, Smarket$Direction)
+names(attributes(confMat)$dimnames) <- c("Prediction","Truth")
+confMat
+# Another way to create a confusion matrix
+confMat_info <- caret::confusionMatrix(glm.pred,Smarket$Direction,
+                                  dnn = c('Prediction', 'Truth'),
+                                  positive = 'Up')
+confMat <- confMat_info$table
+print(confMat)
+```
+Some important terminology:
+True Positive (TP), True Negative (TN), False Positive (FP), False Negative (FN)
+
+```{r}
+# find TP, TN, FP and FN
+tp = confMat[2,2]
+tn = confMat[1,1]
+fp = confMat[2,1]
+fn = confMat[1,2]
+```
+Here is a list of rates that are often computed from a confusion matrix for a binary classifier 
+
+1. Accuracy: $$\frac{TP + TN}{\text{total}} = \text{Accuracy}$$
+
+```{r}
+(tp + tn) / nrow(Smarket)
+```
+2. Misclassification Rate: how often is it wrong?
+$$\frac{FP + FN}{\text{total}} = \text{error rate}$$
+also known as "Error Rate"
+```{r}
+# misclassification rate - do it yourself!
+
+```
+3. True Positive Rate: When it's actually yes, how often does it predict yes?
+$$\frac{TP}{\text{actual yes}} = \frac{TP}{TP + FN} = \text{sensitivity}$$
+also known as "Sensitivity"
+```{r}
+# true postive rate - do it yourself 
+```
+4. True Negative Rate: When it's actually no, how often does it predict no?
+$$\frac{TN}{\text{actual no}} = \text{Specificity}$$
+5. False Positive Rate:  When it's actually no, how often does it predict yes?
+$$\frac{FP}{\text{actual no}} = \frac{FP}{TN + FP} = 1 - \text{specificity}$$
+```{r}
+# get sensitivity and specificty directly 
+confMat_info$byClass
+```
+
+## Motivation for using an ROC curve
+
+
+ Let's consider a disease that only affects 1 in a million people, a completely bogus screening test that always reports “negative” will be 99.9999% accurate. But this is USELESS! We want to corretly identify positive cases in order to save people who have the disease. 
+ 
+
+```{r}
+# a function to find predicted probabilities
+findPred <- function(cutoff) {
+  pred = rep('Down', nrow(Smarket))
+  pred[glm.probs > cutoff] <- 'Up'
+  pred <- factor(pred, levels = c('Down', 'Up'))
+  return(pred)
+}
+# a function to calculate misclassification rate
+findmisClassRate <- function(pred) {
+  errRate = mean(pred != Smarket$Direction)
+  return(errRate)
+}
+# a function to calculate false postive rate
+findFPR <- function(pred) {
+  confMat_info <- caret::confusionMatrix(pred,Smarket$Direction,
+                                  dnn = c('Prediction', 'Truth'),
+                                  positive = 'Up')
+  fpr <- 1 - confMat_info$byClass['Specificity']
+  return(fpr)
+}
+# a function to calculate false negative rate
+findFNR <- function(pred) {
+  confMat_info <- caret::confusionMatrix(pred, Smarket$Direction,
+                                  dnn = c('Prediction', 'Truth'),
+                                  positive = 'Up')
+  fnr <- 1 - confMat_info$byClass['Sensitivity']
+  return(fnr)
+}
+```
+
+```{r}
+cutoffs <- seq(0, 1, by = 0.001)
+allPred <- lapply(cutoffs, findPred)
+df2plot <- data.frame(cutoffs = cutoffs,
+                      fnr = sapply(allPred, findFNR),
+                      fpr = sapply(allPred, findFPR), 
+                      misClassRate = sapply(allPred, findmisClassRate))
+df2plot <- reshape2::melt(df2plot, id.vars = c('cutoffs'), 
+                          variable.name = 'ErrorType',
+                          value.name = 'Rate')
+ggplot(df2plot, aes(x = cutoffs, y = Rate, col = ErrorType)) + 
+  geom_line() + xlim(0.4, 0.6)
+```
+
+## ROC curves
+#### ROC (receiver operating characteristic curve): 
+\begin{itemize}
+\item
+a commonly used graph that summarizes the performance of a classifier over all possible thresholds.
+\item It is generated by plotting the True Positive Rate (y-axis) against the False Positive Rate (x-axis) as you vary the threshold for assigning observations to a given class.
+\item There is a tradeoffs between sensitivitiy and specificity in a binary classifier
+\end{itemize}
+
+```{r}
+# want to get an ROC curve? Use the package ROCR or pROC
+# Every classifier evaluation using ROCR starts with creating a prediction object. 
+#This function is used to transform the input data 
+#(which can be in vector, matrix, data frame, or list form) 
+#into a standardized format.
+pred.roc <- ROCR::prediction(predictions = glm.probs, 
+                             labels = Smarket$Direction, 
+                             label.ordering = NULL)
+perf.roc <- ROCR::performance(pred = pred.roc,
+  measure = "tpr",
+  x.measure = "fpr")
+# Create a plot of the ROC curve #
+# Note: We are colorzing here to vizualize where the cutoffs are #
+ROCR::plot(perf.roc, colorize = T)
+# add the diagonal for reference
+abline(a=0, b= 1, lty= 2)
+```
+
+#### AUC: area under an ROC curve
+
+```{r}
+auc.perf = ROCR::performance(pred.roc, measure = "auc")
+auc.perf@y.values
+```
+#### Optimal cut-off point 
+
+```{r}
+# Note: The optimal cutoff point depends on how much weight we give to sensitivity and specificity. You can specify the weights in the function ROCR::perfomrance() 
+# here we choose to weigh them equally
+cost.perf = ROCR::performance(pred.roc, "cost")
+# optimal cut-off index
+best_idx <- which.min(cost.perf@y.values[[1]])
+# optimal cut-off
+pred.roc@cutoffs[[1]][best_idx]
+# the corresponding optimal tpr or sensitivity
+perf.roc@y.values[[1]][best_idx]
+```
+#### Model comparison
+```{r}
+smarket.fit2 <- glm(Direction ~ Lag2 + Lag3 + Lag4 + Lag5 + Volume,
+                      data = Smarket,
+                      family = "binomial"(link = "logit"))
+glm.probs2 <- predict(smarket.fit2, type = 'response')
+roc1 <- pROC::roc(Smarket$Direction, glm.probs)
+roc2 <- pROC::roc(Smarket$Direction, glm.probs2)
+# plot the 2 ROC curves in one plot
+# Note the plots below have x-axis being "specificity"
+# so they are technically not ROC curves
+plot(roc1)
+plot(roc2, add=TRUE, col='red')
+# you can use ggplot to roc1 and roc2 in one plot and compare
+```
+
+# Residual deviance in negative binomial regression
+
+#### Why is there no lack of fit test for negative binomial regression? 
+
+Recall that to check lack of fit for logistic regression and poisson regression (both of which have a mean parameter but no variance parameter), we can use the residual deviance. Here there is an implicit hypothesis test. We are essentially doing a hypothesis test with $$H_o: \beta_{p + 1} = \cdots = \beta_{n} = 0$$ and the residual deviance has an approximate chi-squared distribution with $n - p$ degrees of freedom (i.e. the residual degrees of freedom). We reject $H_o$ if $\text{p-value} = P(\chi^2_{n - p} > \text{obs. residual deviance})$ is smaller than $\alpha$ (e.g. 0.05). A heuristic way to check lack of fit is simply comparing the residual deviance with the mean of $\chi^2_{n-p}$ distribution, which is $n-p$.If the residual deviance is smaller than degrees of freedom, then we say there is no lack of fit. 
+
+In negative binomial regression, however, there is an unknown overdispersion parameter. The residual deviance depends on the unknown overdispersion parameter. Thus we can no longer do the above hypothesis test to detect whether there is a lack of fit. The same reasoning applies to normal linear regression. 
+
+So what does this tell us? After you fit a negative binomial regression, don't compare the residual deviance with the residual degrees of freedom, since it is not a meaningful comparison anymore.
+
+#### Then how do we assess the lack of fit for negative binomial regression? 
+
+Use simulations to obtain RMSE/coverage to assess the model fit, as in the course slides.
+
+
+References:
+1. <https://www.dataschool.io/simple-guide-to-confusion-matrix-terminology/>\\
+2. ISLR P 147 on ROC curves
+(Video lectures of ISLR: <https://www.dataschool.io/15-hours-of-expert-machine-learning-videos/>)\\
+3. <https://www.r-bloggers.com/a-small-introduction-to-the-rocr-package/>
